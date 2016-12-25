@@ -28,10 +28,7 @@ RUN git clone --branch=stable https://github.com/bigartm/bigartm.git\
    && (cd bigartm && mkdir build && cd build && cmake .. && make install )
 
 RUN bash --login -c "source activate jupyterhub_py3 && pip install\
-  
-  python-telegram-bot\
+
   pandas\
   numpy\
-  seaborn\
-  sklearn\
-  matplotlib"
+  sklearn\"
