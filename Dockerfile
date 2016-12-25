@@ -27,8 +27,6 @@ RUN python get-pip.py
     
 RUN git clone --branch=stable https://github.com/bigartm/bigartm.git\
    && (cd bigartm && mkdir build && cd build && cmake .. && make install )
-   
-RUN bash export ARTM_SHARED_LIBRARY=/usr/local/lib/libartm.so
 
 RUN bash --login -c "source activate jupyterhub_py3 && pip install\
   
