@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     protobuf-compiler\
     libboost-all-dev\
     python-pip\
-    build-essential\
+    build-essential
     
 RUN pip install setuptools
 RUN pip install protobuf
