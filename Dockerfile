@@ -15,20 +15,13 @@ RUN apt-get update && apt-get install -y \
     libprotobuf-dev\
     protobuf-compiler\
     libboost-all-dev\
-    python-pip\
     build-essential
-    
-RUN pip install protobuf
-RUN pip install tqdm
 
 RUN wget https://bootstrap.pypa.io/get-pip.py 
 RUN python get-pip.py
     
+RUN pip install tqdm
+RUN pip install protobuf
+
 RUN git clone --branch=stable https://github.com/bigartm/bigartm.git\
    && (cd bigartm && mkdir build && cd build && cmake .. && make install )
-
-RUN bash --login -c "source activate jupyterhub_py3 && pip install\
-
-  pandas\
-  numpy\
-  sklearn\"
