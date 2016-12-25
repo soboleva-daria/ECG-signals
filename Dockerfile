@@ -2,9 +2,8 @@ FROM yandex/rep:0.6.4
 MAINTAINER Soboleva Daria <daria_soboleva_vmk@gmail.com>
 
 
-
 RUN apt-get update && apt-get install -y \
-    git \
+    git\
     python-dev\
     libxml2-dev\
     libxslt1-dev\
