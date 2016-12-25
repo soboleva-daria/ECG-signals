@@ -18,7 +18,6 @@ RUN apt-get update && apt-get install -y \
     python-pip\
     build-essential
     
-RUN pip install setuptools
 RUN pip install protobuf
 RUN pip install tqdm
 
