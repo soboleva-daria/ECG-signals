@@ -20,9 +20,6 @@ RUN apt-get update && apt-get install -y \
     
 RUN wget https://bootstrap.pypa.io/get-pip.py && python get-pip.py
 
-RUN pip install tqdm
-RUN pip install protobuf
-
 RUN bash --login -c "source activate jupyterhub_py3 && pip install\
   
   python-telegram-bot\
@@ -30,4 +27,6 @@ RUN bash --login -c "source activate jupyterhub_py3 && pip install\
   numpy\
   seaborn\
   sklearn\
-  matplotlib"
+  matplotlib\
+  tqdm\
+  protobuf"
