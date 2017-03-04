@@ -31,7 +31,6 @@ sys.path.insert(1,'/notebooks/pyloggers')
 from telegram_logger import TelegramLogger
 tl = TelegramLogger(name='artm')
 
-EPS_sparse = 1e-4
 class EkgClassification(object):
 
     def __init__(self,
@@ -53,66 +52,13 @@ class EkgClassification(object):
         self.n_folds = n_folds
         self.eps = eps
 
-    def reject_shuffle(self, lines, n_shuffles):
-        """Shuffle lines n_shuffles times.
-
-        Parameters:
-        ===========
-        lines :
-           Lines to shuffle.
-
-        n_shuffles :
-           The number of times to shuffle.
-        """
-        orders = set()
-        e_strings = list(enumerate(lines))
-
-        for gen_idx in range(n_shuffles):
-
-            while tuple([idx for idx, _ in e_strings]) in orders:
-                  np.random.shuffle(e_strings)
-
-            orders.update((tuple([idx for idx, _ in e_strings]),))
-            yield [val for _, val in e_strings]
-
-
-    def create_shuffled_vw(self):
-        """Creates shuffled vw files."""
-        with open('vw.txt', 'r') as fin:
-            lines = fin.readlines()
-
-        for gen_idx, shuffled in enumerate(self.reject_shuffle(lines, self.n_shuffles)):
-            y_true = []
-            for line in shuffled:
-                line_tmp = "%s " % (line.split('|', 1)[1][:-1])
-                str_tmp = re.findall(r'\:(.*?)\ ', line_tmp)
-                y_true.append(str_tmp[1])
-
-                with open('true_labels_vw{}.txt'.format(gen_idx), 'w') as fout:
-                    fout.write('\n'.join(y_true))
-
-                with open('vw{}.txt'.format(gen_idx), 'w') as fout:
-                    fout.write(''.join(shuffled))
-
-
     def cv_folds(self, n_shuffle):
-        """Creates folds for cross-validation.
-
-        Parameters:
-        ===========
-        n_shuffle : 
-           The number of shuffled vowpal-wabbit files.
-        """
-        # Initialization
-        # docs_freq = {}
-        # docs_freq3 = {}
-
-        with open('true_labels_vw{}.txt'.format(n_shuffle), 'r') as fin:
+        with open('true_labels_train{}.txt'.format(n_shuffle), 'r') as fin:
             y_true = np.array([int(i) for i in fin.readlines()], dtype=str)
-            
-        with open('vw{}.txt'.format(n_shuffle), 'r') as fin:
+
+        with open('vw_train{}.txt'.format(n_shuffle), 'r') as fin:
             data = np.array(fin.readlines())
-            
+
         skf = StratifiedKFold(y_true, self.n_folds, random_state=241)
 
         data_dir = self.data_dir
@@ -121,27 +67,19 @@ class EkgClassification(object):
             d_dir = '{}/data{}'.format(data_dir, n_fold)
             os.mkdir(d_dir)
             with open(os.path.join(d_dir, 'test.txt'), 'w') as test:
-                with open(os.path.join(d_dir, 'true_labels.txt'), 'w') as label:
-                    with open(os.path.join(d_dir, 'train.txt'), 'w') as train:
+                with open(os.path.join(d_dir, 'train.txt'), 'w') as train:
+                    with open(os.path.join(d_dir, 'true_labels_test.txt'), 'w') as test_labels:
+                        with open(os.path.join(d_dir, 'true_labels_train.txt'), 'w') as train_labels:
 
-                        train.write(''.join(data[i]))
-                        label.write('\n'.join(y_true[j]))
+                            train.write(''.join(data[i]))
+                            train_labels.write('\n'.join(y_true[i]))
 
-                        for line in data[j]:
-                            test.write("%s\n" % (line.partition('|')[0]))
-
-        # return docs_freq, docs_freq3
+                            test_labels.write('\n'.join(y_true[j]))
+                            for line in data[j]:
+                                test.write("%s\n" % (line.partition('|')[0]))
 
 
     def create_batches(self, d_dir):
-        """Create train and test batches in d_dir.
-
-        Parameters:
-        ===========
-        d_dir : 
-           The data directory.
-        """
-
         batch_vectorize = None
         new_folder = os.path.join(d_dir, 'data_batches')
         target_folder_train = "%s%s" % (new_folder, '_train')
@@ -194,211 +132,261 @@ class EkgClassification(object):
                 'test.batch'),
             folder_for_dict)
 
-    def build_model(self, tau, w_gram3, tau_theta, tau_phi_gram3):
-        self.create_shuffled_vw()
+    def build_model(self, d_dir, c, gram3):
+        
+        batch_vectorizer_fit = artm.BatchVectorizer(
+            data_path=os.path.join(
+                d_dir,
+                'data_batches_train'),
+            data_format="batches")
+
+        batch_vectorizer_test = artm.BatchVectorizer(
+            data_path=os.path.join(
+                d_dir,
+                'data_batches_test'),
+            data_format="batches")
+
+        dictionary = artm.Dictionary()
+        dictionary.gather(data_path=os.path.join(d_dir, 'for_dict'))
+
+        model = artm.ARTM(
+            num_topics=self.n_topics,
+            dictionary=dictionary,
+            cache_theta=True,
+            reuse_theta=True)
+
+        # Perplexity
+        #model.scores.add(artm.PerplexityScore(name='PerplexityScoreC',
+        #                                      class_ids=[c],
+        #                                      dictionary=dictionary))
+
+        #model.scores.add(artm.PerplexityScore(name='PerplexityScoreGram3',
+        #                                      class_ids=[gram3],
+        #                                      dictionary=dictionary))
+
+        # Sparsity p(c|t) 
+        model.scores.add(
+            artm.SparsityPhiScore(
+                eps=self.eps,
+                name='SparsityPhiScoreC',
+                class_id=c))
+
+        # Sparsity p(w|t)
+        model.scores.add(
+            artm.SparsityPhiScore(
+                eps=self.eps,
+                name='SparsityPhiScoreGram3',
+                class_id=gram3))
+
+        # Regularization of sparsity p(gram3|t)
+        model.regularizers.add(
+            artm.SmoothSparsePhiRegularizer(
+                name='SparsePhiGram3Regularizer', 
+                class_ids=[gram3]))
+
+        model.num_document_passes = self.n_document_passes
+        return (model, 
+                batch_vectorizer_fit,
+                batch_vectorizer_test)
+    
+    def process_model(self, 
+                      model,
+                      c, gram3,
+                      tau,
+                      w_gram3, 
+                      tau_phi_gram3,
+                      batch_vectorizer_fit,
+                      y_train,
+                      batch_vectorizer_test,
+                      y_test):
+        auc_train = []
+        auc_test = []
+        logloss_train = []
+        logloss_test = []
+        #perplexity_c = []
+        #perplexity_gram3 = []
+        sparsity_phi_c = []
+        sparsity_phi_gram3 = []
+        
+        for n_iter in range(self.n_collection_passes):
+            model.regularizers['SparsePhiGram3Regularizer'].tau = tau_phi_gram3[n_iter]
+            model.class_ids = {
+                gram3: w_gram3[n_iter],
+                c: tau[n_iter]}
+
+            model.fit_offline(
+                num_collection_passes=1,
+                batch_vectorizer=batch_vectorizer_fit)
+
+            #perplexity_c.append(
+            #    model.score_tracker['PerplexityScoreC'].last_value)
+
+            #perplexity_gram3.append(
+            #    model.score_tracker['PerplexityScoreGram3'].last_value)
+
+            sparsity_phi_c.append(
+                model.score_tracker['SparsityPhiScoreC'].last_value)
+
+            sparsity_phi_gram3.append(
+                model.score_tracker['SparsityPhiScoreGram3'].last_value)
+            
+            train_theta = model.transform(
+                batch_vectorizer=batch_vectorizer_fit,
+                predict_class_id='labels').T
+            y_pred_train = train_theta['label1'].values
+            
+            test_theta = model.transform(
+                batch_vectorizer=batch_vectorizer_test,
+                predict_class_id='labels').T
+            y_pred_test = test_theta['label1'].values
+
+            auc_train.append(roc_auc_score(y_train, y_pred_train))
+            auc_test.append(roc_auc_score(y_test, y_pred_test))
+
+            logloss_train.append(log_loss(y_train, y_pred_train))
+            logloss_test.append(log_loss(y_test, y_pred_test))
+            
+        # p(t|c)
+        theta = model.get_theta()
+        p_d = 1.0 / (self.n_objs - y_pred_test.shape[0])
+        p_t = theta
+        p_t = p_t.multiply(p_d)
+        p_t = p_t.sum(axis=1)
+
+        phi = model.get_phi().reset_index()
+        p_ct = phi[(phi['index'] == 'label0') | (
+                phi['index'] == 'label1')].set_index('index')
+        p_ct = p_ct.multiply(p_t)
+        p_tc = p_ct.div(p_ct.sum(axis=1), axis='index').T
+        
+        return (auc_train,
+                auc_test,
+                logloss_train,
+                logloss_test,
+                #perplexity_c,
+                #perplexity_gram3,
+                sparsity_phi_c,
+                sparsity_phi_gram3,
+                p_tc)
+               
+        
+    def cross_val_score(self, tau, w_gram3, tau_phi_gram3):
 
         data_dir = self.data_dir
-        n_topics = self.n_topics
-        n_collection_passes = self.n_collection_passes
-        n_document_passes = self.n_document_passes 
-        n_shuffles = self.n_shuffles
         n_folds = self.n_folds
+        n_topics = self.n_topics
+        n_shuffles = self.n_shuffles
 
         c = 'labels'
         gram3 = '@default_class'
 
         auc_folds_iter  = {}
         logloss_folds_iter = {}
-        perplexity_c = {}
-        perplexity_gram3 = {}
-        sparsity_phi_c = {}
-        sparsity_phi_gram3 = {}
-        sparsity_theta = {}
+        #perplexity_c_folds_iter = {}
+        #perplexity_gram3_folds_iter = {}
+        sparsity_phi_c_folds_iter = {}
+        sparsity_phi_gram3_folds_iter = {}
 
         ptc = {}
         ptc['label0'] = np.zeros(n_topics)
         ptc['label1'] = np.zeros(n_topics)
 
-        for i in range(n_collection_passes):
+        for i in range(self.n_collection_passes):
             auc_folds_iter[i] = []
             logloss_folds_iter[i] = []
-            perplexity_c[i] = []
-            perplexity_gram3[i] = []
-            sparsity_phi_c[i] = []
-            sparsity_phi_gram3[i] = []
-            sparsity_theta[i] = []
+            #perplexity_c_folds_iter[i] = []
+            #perplexity_gram3_folds_iter[i] = []
+            sparsity_phi_c_folds_iter[i] = []
+            sparsity_phi_gram3_folds_iter[i] = []
 
         for n_shuffle in range(n_shuffles):
+            
             tl.push(n_shuffle)
             os.mkdir(data_dir)
-            # docs_freq, docs_freq3 =
             self.cv_folds(n_shuffle)
 
             for n_fold in range(n_folds):
-                # test_labels_file = os.path.join(data_dir, 'true_labels.txt')
-                # true_p_cd = []
-                # with open(test_labels_file, 'r') as fin:
-                #    for line in fin.readlines():
-                #        if int(line.split(" ")[0]):
-                #            true_p_cd.append(0)
-                #        else:
-                #            true_p_cd.append(1)
-
-                # true_p_cd = np.asarray(true_p_cd)
-
                 d_dir = '{}/data{}'.format(data_dir, n_fold)
 
-                with open(os.path.join(d_dir, 'true_labels.txt'), 'r') as fin:
-                    y_true = np.array([int(i) for i in fin.readlines()], dtype=int)
+                with open(os.path.join(d_dir, 'true_labels_train.txt'), 'r') as fin:
+                    y_train = np.array([int(i) for i in fin.readlines()], dtype=int)
+                    
+                with open(os.path.join(d_dir, 'true_labels_test.txt'), 'r') as fin:
+                    y_test = np.array([int(i) for i in fin.readlines()], dtype=int)
 
                 self.create_batches(d_dir)
-
-                batch_vectorizer_fit = artm.BatchVectorizer(
-                    data_path=os.path.join(
-                        d_dir,
-                        'data_batches_train'),
-                    data_format="batches")
-
-                batch_vectorizer_test = artm.BatchVectorizer(
-                    data_path=os.path.join(
-                        d_dir,
-                        'data_batches_test'),
-                    data_format="batches")
-
-                dictionary = artm.Dictionary()
-                dictionary.gather(data_path=os.path.join(d_dir, 'for_dict'))
-
-                model = artm.ARTM(
-                    num_topics=n_topics,
-                    dictionary=dictionary,
-                    cache_theta=True,
-                    reuse_theta=True)
-
-                # Initialization
-                #(_, phi_ref) = model.master.attach_model(model=model.model_pwt)
-                # phi_new = build_phi(n_topics, docs_freq, docs_freq3)
-
-                # ind = list(model.get_phi(model_name=model.model_pwt).reset_index()['index'])
-                # phi_new = phi_new.reindex(ind).as_matrix()
-
-                # for tok in xrange(n_tokens):
-                #    for top in xrange(n_topics):
-                #        phi_ref[tok, top] = phi_new[tok, top]
-
-                # Perplexity
-                model.scores.add(artm.PerplexityScore(name='PerplexityScoreC',
-                                                      class_ids=[c],
-                                                      dictionary=dictionary))
-
-                model.scores.add(artm.PerplexityScore(name='PerplexityScoreGram3',
-                                                      class_ids=[gram3],
-                                                      dictionary=dictionary))
-
-                # Sparsity p(c|t) 
-                model.scores.add(
-                    artm.SparsityPhiScore(
-                        eps=EPS_sparse,
-                        name='SparsityPhiScoreC',
-                        class_id=c))
-
-                # Sparsity p(w|t)
-                model.scores.add(
-                    artm.SparsityPhiScore(
-                        eps=EPS_sparse,
-                        name='SparsityPhiScoreGram3',
-                        class_id=gram3))
+                model, batch_vectorizer_fit, batch_vectorizer_test = self.build_model(d_dir, c, gram3)
                 
-                # Sparsity p(t|d)
-                model.scores.add(
-                    artm.SparsityThetaScore(
-                        eps=EPS_sparse,
-                        name='SparsityThetaScore'))
-                
-                # Regularization of sparsity p(gram3|t)
-                model.regularizers.add(
-                    artm.SmoothSparsePhiRegularizer(
-                        name='SparsePhiGram3Regularizer', 
-                        class_ids=[gram3]))
-                
-                # Regularization of sparsity p(t|d)
-                model.regularizers.add(
-                     artm.SmoothSparseThetaRegularizer(
-                       name='SparsetThetaRegularizer'))
-
-                model.num_document_passes = n_document_passes
-
-                for n_iter in range(n_collection_passes):
+                (_, auc, 
+                 _, logloss, 
+                 #perplexity_c,
+                 #perplexity_gram3,
+                 sparsity_phi_c,
+                 sparsity_phi_gram3,
+                 p_tc) =           self.process_model(
+                                            model,
+                                            c, gram3,
+                                            tau,
+                                            w_gram3,
+                                            tau_phi_gram3,
+                                            batch_vectorizer_fit,
+                                            y_train,
+                                            batch_vectorizer_test, 
+                                            y_test)
                     
-                    model.regularizers['SparsePhiGram3Regularizer'].tau = tau_phi_gram3[n_iter]
-                    model.regularizers['SparsetThetaRegularizer'].tau = tau_theta[n_iter]
+                for n_iter in range(self.n_collection_passes):
+                    auc_folds_iter[n_iter].append(auc[n_iter])
+                    logloss_folds_iter[n_iter].append(logloss[n_iter])
+                    #perplexity_c_folds_iter[n_iter].append(perplexity_c[n_iter])
+                    #perplexity_gram3_folds_iter[n_iter].append(perplexity_gram3[n_iter])
+                    sparsity_phi_c_folds_iter[n_iter].append(sparsity_phi_c[n_iter])
+                    sparsity_phi_gram3_folds_iter[n_iter].append(sparsity_phi_gram3[n_iter])
                     
-                    model.class_ids = {
-                        gram3: w_gram3[n_iter],
-                        c: tau[n_iter]}
-
-                    model.fit_offline(
-                        num_collection_passes=1,
-                        batch_vectorizer=batch_vectorizer_fit)
-
-                    perplexity_c[n_iter].append(
-                        model.score_tracker['PerplexityScoreC'].last_value)
-
-                    perplexity_gram3[n_iter].append(
-                        model.score_tracker['PerplexityScoreGram3'].last_value)
-
-                    sparsity_phi_c[n_iter].append(
-                        model.score_tracker['SparsityPhiScoreC'].last_value)
-
-                    sparsity_phi_gram3[n_iter].append(
-                        model.score_tracker['SparsityPhiScoreGram3'].last_value)
-                    
-                    sparsity_theta[n_iter].append(
-                        model.score_tracker['SparsityThetaScore'].last_value)
-
-                    test_theta = model.transform(
-                        batch_vectorizer=batch_vectorizer_test,
-                        predict_class_id='labels').T
-                    y_pred = test_theta['label1'].values
-
-                    auc_folds_iter[n_iter].append(
-                        roc_auc_score(y_true, y_pred))
-
-                    logloss_folds_iter[n_iter].append(
-                        log_loss(y_true, y_pred))
-
-                # p(t|c)
-                theta = model.get_theta()
-                p_d = 1.0 / (self.n_objs - y_pred.shape[0])
-                p_t = theta
-                p_t = p_t.multiply(p_d)
-                p_t = p_t.sum(axis=1)
-
-                phi = model.get_phi().reset_index()
-                p_ct = phi[(phi['index'] == 'label0') | (
-                    phi['index'] == 'label1')].set_index('index')
-                p_ct = p_ct.multiply(p_t)
-                p_tc = p_ct.div(p_ct.sum(axis=1), axis='index').T
-
-                # p_tc.to_csv(ptc_file)
                 ptc['label0'] += p_tc['label0']
                 ptc['label1'] += p_tc['label1']
-
-
-            # ptc['label0'] /= n_folds
-            # ptc['label1'] /= n_folds
-
+                
             shutil.rmtree(data_dir)
 
         ptc['label0'] /= n_folds * n_shuffles
         ptc['label1'] /= n_folds * n_shuffles
-
+       
         return (auc_folds_iter, 
                 logloss_folds_iter, 
-                perplexity_c, 
-                perplexity_gram3, 
-                sparsity_phi_c, 
-                sparsity_phi_gram3, 
-                sparsity_theta,
+                #perplexity_c_folds_iter, 
+                #perplexity_gram3_folds_iter, 
+                sparsity_phi_c_folds_iter, 
+                sparsity_phi_gram3_folds_iter, 
                 ptc)
+    
+    def valid_score(self,
+                    data_dir,
+                    true_labels_train,
+                    true_labels_valid,
+                    tau,
+                    w_gram3, 
+                    tau_phi_gram3):
+
+        with open(os.path.join(data_dir, true_labels_train), 'r') as fin:
+            y_train = np.array([int(i) for i in fin.readlines()], dtype=int)
+
+        with open(os.path.join(data_dir, true_labels_valid), 'r') as fin:
+            y_valid = np.array([int(i) for i in fin.readlines()], dtype=int)
+           
+        c = 'labels'
+        gram3 = '@default_class'
+        
+        self.create_batches(data_dir)
+        model, batch_vectorizer_fit, batch_vectorizer_valid = self.build_model(data_dir, c, gram3)
 
 
+        return self.process_model(
+                model,
+                c, gram3, 
+                tau,
+                w_gram3,
+                tau_phi_gram3,
+                batch_vectorizer_fit,
+                y_train, 
+                batch_vectorizer_valid,
+                y_valid)
+    
