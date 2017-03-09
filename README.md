@@ -1,1 +1,1 @@
-# EKG_signals
+# EСG_signals
