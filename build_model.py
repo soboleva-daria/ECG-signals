@@ -10,10 +10,14 @@ import logging
 
 from sklearn.metrics import roc_auc_score, log_loss
 from sklearn.cross_validation import StratifiedKFold
+from sklearn.cluster import KMeans
+from sklearn.metrics.pairwise import cosine_distances
 import numpy as np
 import pandas as pd
 
 # Configure logging folder
+import sys
+sys.path.append('/root/bigartm/python')
 import artm
 os.environ["ARTM_SHARED_LIBRARY"] = "/root/bigartm/build/lib/libartm.so"
 
@@ -26,17 +30,17 @@ lc.minloglevel=2  # 0 = INFO, 1 = WARNING, 2 = ERROR, 3 = FATAL
 lib.ArtmConfigureLogging(lc)
 
 # Telegram bot
-import sys
-sys.path.insert(1,'/notebooks/pyloggers')
-from telegram_logger import TelegramLogger
-tl = TelegramLogger(name='artm')
+#sys.path.insert(1,'pyloggers')
+#from telegram_logger import TelegramLogger
+#tl = TelegramLogger(name='artm')
 
-class EkgClassification(object):
+class EcgClassification(object):
 
     def __init__(self,
                  data_dir,
                  n_objs,
                  n_topics,
+                 n_topics_health,
                  n_collection_passes,
                  n_document_passes,
                  n_shuffles=10,
@@ -46,24 +50,110 @@ class EkgClassification(object):
         self.data_dir = data_dir
         self.n_objs = n_objs
         self.n_topics = n_topics
+        self.n_topics_health = n_topics_health
         self.n_collection_passes = n_collection_passes
         self.n_document_passes = n_document_passes
         self.n_shuffles = n_shuffles
         self.n_folds = n_folds
         self.eps = eps
+        
+    def trigrams(self):
+        tokens = []
+        for token in product(string.ascii_uppercase, repeat=3):
 
+            if token[0] > 'F':
+                break
+
+            if token[1] > 'F' or token[2] > 'F':
+                continue
+
+            tokens.append(''.join(token))
+        return tokens
+        
+    '''def initialize_phi(self, file_data, file_true_labels):
+        data = np.load(file_data)
+        y_true = np.load(file_true_labels)
+ 
+        k = 216
+        n_topics = self.n_topics
+        phi = np.zeros((k + 2, n_topics))
+
+        ind_health = y_true == 0
+        phi[:k, 0] = np.array(data[ind_health].sum(axis=0))
+        
+        dis_split = np.array_split(data[~ind_health], n_topics - 1)
+        for n_topic in range(1, n_topics):
+            phi[:k, n_topic] = \
+                 np.array([value.sum(axis=0)  for value in dis_split])
+         
+        phi[k, :] = np.ones(n_topics) * (np.count_nonzero(ind_health))
+        phi[k + 1, :] = np.ones(n_topics) * (y_true.shape[0] - phi[k, :][0])
+        return phi'''
+    
+    def compute_dists(self, data, top_k):
+        #dist_matrix = cosine_distances(data, data)
+        #centers = np.array([idx for idx in dist_matrix.sum(
+        #            axis=1).argsort()[::-1][:top_k]])
+        centers = []
+        data_new = data.copy()
+        for i in range(top_k):
+            dist_matrix = cosine_distances(data_new, data_new)
+            center = dist_matrix.sum(axis=1).argsort()[::-1][0]
+            centers.append(center)
+            data_new = np.delete(data_new, center, axis=0)
+     
+        return cosine_distances(data, data), np.array(centers)
+
+    
+    def initialize_phi(
+                  self,
+                  file_data,
+                  file_true_labels):
+        
+        data = np.load(file_data)
+        y_true = np.load(file_true_labels)
+            
+        k = 216
+        n_topics = self.n_topics
+        n_topics_health = self.n_topics_health
+        phi = np.zeros((k + 2, n_topics))
+        
+        ind_health = y_true == 0
+        dist_matrix_health, centers_health = self.compute_dists(data[ind_health], n_topics_health)
+        dist_matrix_dis, centers_dis = self.compute_dists(data[~ind_health], n_topics - n_topics_health)
+        
+        for i, value in enumerate(data[ind_health]):
+            phi[:k, np.argmin([dist_matrix_health[i, center] for center in centers_health])] += value
+            
+        for i, value in enumerate(data[~ind_health]):
+            phi[:k, n_topics - 1 - np.argmin([dist_matrix_dis[i, center] for center in centers_dis])] += value
+        
+        phi[k, :] = np.ones(n_topics) * (np.count_nonzero(ind_health))
+        phi[k + 1, :] = np.ones(n_topics) * (y_true.shape[0] - phi[k, :][0])
+        
+        
+        return phi
+        
     def cv_folds(self, n_shuffle):
         with open('true_labels_train{}.txt'.format(n_shuffle), 'r') as fin:
             y_true = np.array([int(i) for i in fin.readlines()], dtype=str)
+        y_true_arr = np.load('true_labels_train{}.npy'.format(n_shuffle)) 
 
         with open('vw_train{}.txt'.format(n_shuffle), 'r') as fin:
             data = np.array(fin.readlines())
-
-        skf = StratifiedKFold(y_true, self.n_folds, random_state=241)
+        data_arr = np.load('vw_train{}.npy'.format(n_shuffle))  
+        
+        n_observs = np.load('observs_train{}.npy'.format(n_shuffle))
+            
+        _, idx = np.unique(n_observs, return_index=True)
+        y_true_observs = y_true[np.sort(idx)]
+        skf = StratifiedKFold(y_true_observs, self.n_folds, random_state=241)
 
         data_dir = self.data_dir
         for n_fold, (i, j) in enumerate(skf):
-
+            train_idx = np.in1d(n_observs, n_observs[i])
+            test_idx = np.in1d(n_observs, n_observs[j])
+            
             d_dir = '{}/data{}'.format(data_dir, n_fold)
             os.mkdir(d_dir)
             with open(os.path.join(d_dir, 'test.txt'), 'w') as test:
@@ -71,12 +161,16 @@ class EkgClassification(object):
                     with open(os.path.join(d_dir, 'true_labels_test.txt'), 'w') as test_labels:
                         with open(os.path.join(d_dir, 'true_labels_train.txt'), 'w') as train_labels:
 
-                            train.write(''.join(data[i]))
-                            train_labels.write('\n'.join(y_true[i]))
+                            train.write(''.join(data[train_idx]))
+                            np.save(os.path.join(d_dir, 'train.npy'), data_arr[train_idx])
+                            
+                            train_labels.write('\n'.join(y_true[train_idx]))
+                            np.save(os.path.join(d_dir, 'true_labels_train.npy'), y_true_arr[train_idx])
 
-                            test_labels.write('\n'.join(y_true[j]))
-                            for line in data[j]:
+                            for line in data[test_idx]:
                                 test.write("%s\n" % (line.partition('|')[0]))
+                            
+                            test_labels.write('\n'.join(y_true[test_idx]))
 
 
     def create_batches(self, d_dir):
@@ -177,12 +271,27 @@ class EkgClassification(object):
                 eps=self.eps,
                 name='SparsityPhiScoreGram3',
                 class_id=gram3))
+        model.scores.add(
+            artm.SparsityThetaScore(
+                eps = self.eps, 
+                name = 'SparsityThetaScore',
+                ))
 
+        
         # Regularization of sparsity p(gram3|t)
         model.regularizers.add(
             artm.SmoothSparsePhiRegularizer(
                 name='SparsePhiGram3Regularizer', 
                 class_ids=[gram3]))
+        
+        #model.regularizers.add(
+        #    artm.SmoothSparseThetaRegularizer(
+        #        name='SparseThetaRegularizer'))
+        
+        #model.regularizers.add(
+        #    artm.DecorrelatorPhiRegularizer(
+        #        name='DecorrelatorPhiGram3Regularizer', 
+        #        class_ids=[gram3]))
 
         model.num_document_passes = self.n_document_passes
         return (model, 
@@ -198,7 +307,8 @@ class EkgClassification(object):
                       batch_vectorizer_fit,
                       y_train,
                       batch_vectorizer_test,
-                      y_test):
+                      y_test,
+                      d_dir):
         auc_train = []
         auc_test = []
         logloss_train = []
@@ -207,9 +317,28 @@ class EkgClassification(object):
         #perplexity_gram3 = []
         sparsity_phi_c = []
         sparsity_phi_gram3 = []
+        sparsity_theta = []
         
+        phi = self.initialize_phi(
+                          os.path.join(d_dir, 'train.npy'),
+                          os.path.join(d_dir, 'true_labels_train.npy')
+                         )
+        topics = ['topic{}'.format(t) for t in range(self.n_topics)]
+        phi_new = pd.DataFrame(phi, columns=topics)
+        phi_new['w'] = self.trigrams() + ['label0', 'label1']
+        
+        (_, phi_ref) = model.master.attach_model(model=model.model_pwt)
+        model_phi = model.get_phi(model_name=model.model_pwt)
+
+        for i, w in enumerate(model_phi.index):
+            for j, t in enumerate(topics):
+                phi_ref[i, j] = phi_new[phi_new.w == w][t].values[0]
+                
         for n_iter in range(self.n_collection_passes):
             model.regularizers['SparsePhiGram3Regularizer'].tau = tau_phi_gram3[n_iter]
+            #model.regularizers['DecorrelatorPhiGram3Regularizer'].tau = - tau_phi_decorr_gram3[n_iter]
+            #model.regularizers['SparseThetaRegularizer'].tau = tau_theta[n_iter]
+            
             model.class_ids = {
                 gram3: w_gram3[n_iter],
                 c: tau[n_iter]}
@@ -230,6 +359,9 @@ class EkgClassification(object):
             sparsity_phi_gram3.append(
                 model.score_tracker['SparsityPhiScoreGram3'].last_value)
             
+            sparsity_theta.append(
+                model.score_tracker['SparsityThetaScore'].last_value)
+            
             train_theta = model.transform(
                 batch_vectorizer=batch_vectorizer_fit,
                 predict_class_id='labels').T
@@ -239,12 +371,14 @@ class EkgClassification(object):
                 batch_vectorizer=batch_vectorizer_test,
                 predict_class_id='labels').T
             y_pred_test = test_theta['label1'].values
-
+            
             auc_train.append(roc_auc_score(y_train, y_pred_train))
             auc_test.append(roc_auc_score(y_test, y_pred_test))
 
+
             logloss_train.append(log_loss(y_train, y_pred_train))
             logloss_test.append(log_loss(y_test, y_pred_test))
+        
             
         # p(t|c)
         theta = model.get_theta()
@@ -267,6 +401,7 @@ class EkgClassification(object):
                 #perplexity_gram3,
                 sparsity_phi_c,
                 sparsity_phi_gram3,
+                sparsity_theta,
                 p_tc)
                
         
@@ -286,7 +421,8 @@ class EkgClassification(object):
         #perplexity_gram3_folds_iter = {}
         sparsity_phi_c_folds_iter = {}
         sparsity_phi_gram3_folds_iter = {}
-
+        sparsity_theta_folds_iter = {}
+            
         ptc = {}
         ptc['label0'] = np.zeros(n_topics)
         ptc['label1'] = np.zeros(n_topics)
@@ -298,10 +434,11 @@ class EkgClassification(object):
             #perplexity_gram3_folds_iter[i] = []
             sparsity_phi_c_folds_iter[i] = []
             sparsity_phi_gram3_folds_iter[i] = []
+            sparsity_theta_folds_iter[i] = []
 
         for n_shuffle in range(n_shuffles):
             
-            tl.push(n_shuffle)
+            #tl.push(n_shuffle)
             os.mkdir(data_dir)
             self.cv_folds(n_shuffle)
 
@@ -316,13 +453,14 @@ class EkgClassification(object):
 
                 self.create_batches(d_dir)
                 model, batch_vectorizer_fit, batch_vectorizer_test = self.build_model(d_dir, c, gram3)
-                
+
                 (_, auc, 
                  _, logloss, 
                  #perplexity_c,
                  #perplexity_gram3,
                  sparsity_phi_c,
                  sparsity_phi_gram3,
+                 sparsity_theta,
                  p_tc) =           self.process_model(
                                             model,
                                             c, gram3,
@@ -332,7 +470,8 @@ class EkgClassification(object):
                                             batch_vectorizer_fit,
                                             y_train,
                                             batch_vectorizer_test, 
-                                            y_test)
+                                            y_test,
+                                            d_dir)
                     
                 for n_iter in range(self.n_collection_passes):
                     auc_folds_iter[n_iter].append(auc[n_iter])
@@ -341,6 +480,7 @@ class EkgClassification(object):
                     #perplexity_gram3_folds_iter[n_iter].append(perplexity_gram3[n_iter])
                     sparsity_phi_c_folds_iter[n_iter].append(sparsity_phi_c[n_iter])
                     sparsity_phi_gram3_folds_iter[n_iter].append(sparsity_phi_gram3[n_iter])
+                    sparsity_theta_folds_iter[n_iter].append(sparsity_theta[n_iter])
                     
                 ptc['label0'] += p_tc['label0']
                 ptc['label1'] += p_tc['label1']
@@ -356,6 +496,7 @@ class EkgClassification(object):
                 #perplexity_gram3_folds_iter, 
                 sparsity_phi_c_folds_iter, 
                 sparsity_phi_gram3_folds_iter, 
+                sparsity_theta_folds_iter,
                 ptc)
     
     def valid_score(self,
@@ -388,5 +529,6 @@ class EkgClassification(object):
                 batch_vectorizer_fit,
                 y_train, 
                 batch_vectorizer_valid,
-                y_valid)
+                y_valid, 
+                data_dir)
     
