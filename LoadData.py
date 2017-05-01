@@ -104,7 +104,7 @@ def create_shuffled_vws(file_src, file_true_labels, file_observs_train, n_shuffl
         np.save('{}{}.npy'.format(file_observs_train, i), n_observs_shuffle)
 
 
-def read_data(n_dis, n_health, data_dir, predictors): 
+def read_data(n_dis, n_health, predictors): 
     data = pd.read_csv('data.txt', sep='\t')
     data.columns = ['n_record', 'n_observ'] + list(range(1, 137))
 
@@ -150,22 +150,22 @@ def train_test_split(data, predictors, target, data_dir, train_frac=0.7, n_shuff
     create_train_vw(
         train,
         target,
-        os.path.join(data_dir, 'vw_train'),
-        os.path.join(data_dir, 'true_labels_train'),
-        os.path.join(data_dir, 'observs_train'),
+        '{}/vw_train'.format(data_dir),
+        '{}/true_labels_train'.format(data_dir),
+        '{}/observs_train'.format(data_dir),
         predictors
     )
     create_valid_vw(
         valid,
         target,
-        os.path.join(data_dir, 'vw_valid'),
-        os.path.join(data_dir, 'true_labels_valid'),
+        '{}/vw_valid'.format(data_dir),
+        '{}/true_labels_valid'.format(data_dir),
         predictors)
 
     create_shuffled_vws(
-        os.path.join(data_dir, 'vw_train'),
-        os.path.join(data_dir, 'true_labels_train'),
-        os.path.join(data_dir, 'observs_train'),
+        '{}/vw_train'.format(data_dir),
+        '{}/true_labels_train'.format(data_dir),
+        '{}/observs_train'.format(data_dir),
         n_shuffles)
 
     return X_train, y_train, X_valid, y_valid
